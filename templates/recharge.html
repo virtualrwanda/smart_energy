@@ -1,0 +1,584 @@
+{% extends "base.html" %}
+
+{% block title %}Recharge Meter - Energy Meter System{% endblock %}
+
+{% block content %}
+<div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+    <!-- Page Header -->
+    <div class="mb-8">
+        <h1 class="text-3xl font-bold text-gray-900">Recharge Energy Meter</h1>
+        <p class="mt-2 text-sm text-gray-600">Add credit to your meter. Amount will be converted at rate: 
+            <span class="font-semibold text-blue-600">{{ "%.4f"|format(config.CONVERSION_RATE|default(0.0047)) }}</span> kWh per RWF
+        </p>
+    </div>
+
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+        <!-- Main Recharge Form -->
+        <div class="lg:col-span-2">
+            <div class="bg-white rounded-lg shadow-lg overflow-hidden">
+                <div class="px-6 py-4 bg-gradient-to-r from-blue-600 to-blue-700">
+                    <h2 class="text-xl font-semibold text-white">
+                        <i class="fas fa-credit-card mr-2"></i>
+                        Recharge Now
+                    </h2>
+                </div>
+                
+                <div class="p-6">
+                    <!-- Flash Messages -->
+                    {% with messages = get_flashed_messages(with_categories=true) %}
+                        {% if messages %}
+                            <div class="mb-6 space-y-2">
+                                {% for category, message in messages %}
+                                    <div class="p-4 rounded-md {% if category == 'success' %}bg-green-50 text-green-700 border border-green-200{% elif category == 'error' %}bg-red-50 text-red-700 border border-red-200{% else %}bg-blue-50 text-blue-700 border border-blue-200{% endif %}">
+                                        <div class="flex">
+                                            <div class="flex-shrink-0">
+                                                {% if category == 'success' %}
+                                                    <i class="fas fa-check-circle text-green-400"></i>
+                                                {% elif category == 'error' %}
+                                                    <i class="fas fa-exclamation-circle text-red-400"></i>
+                                                {% else %}
+                                                    <i class="fas fa-info-circle text-blue-400"></i>
+                                                {% endif %}
+                                            </div>
+                                            <div class="ml-3">
+                                                <p class="text-sm">{{ message }}</p>
+                                            </div>
+                                        </div>
+                                    </div>
+                                {% endfor %}
+                            </div>
+                        {% endif %}
+                    {% endwith %}
+
+                    <form id="rechargeForm" method="POST" class="space-y-6">
+                        <!-- CSRF Token - Method 1: Hidden input (works for both AJAX and regular POST) -->
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" id="csrf_token">
+                        
+                        <!-- CSRF Token - Method 2: For AJAX fallback -->
+                        <meta name="csrf-token" content="{{ csrf_token() }}">
+                        
+                        {% if current_user.is_admin %}
+                        <!-- Admin: Can select any meter -->
+                        <div>
+                            <label for="meter_serial_number" class="block text-sm font-medium text-gray-700 mb-2">
+                                <i class="fas fa-microchip mr-1 text-gray-400"></i>
+                                Meter Serial Number
+                            </label>
+                            <select id="meter_serial_number" name="meter_serial_number" required
+                                    class="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm rounded-md">
+                                <option value="">Select a meter...</option>
+                                {% if meters %}
+                                    {% for meter in meters %}
+                                        <option value="{{ meter.serial_number }}" {% if selected_meter == meter.serial_number %}selected{% endif %}>
+                                            {{ meter.serial_number }} - {{ meter.owner_name }} (Balance: {{ "%.2f"|format(meter.balance) }} kWh)
+                                        </option>
+                                    {% endfor %}
+                                {% endif %}
+                            </select>
+                        </div>
+                        {% else %}
+                            <!-- Client: Auto-filled meter -->
+                            {% if current_user.serial_number %}
+                            <div class="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                                <div class="flex items-center">
+                                    <div class="flex-shrink-0">
+                                        <i class="fas fa-microchip text-blue-500 text-2xl"></i>
+                                    </div>
+                                    <div class="ml-4">
+                                        <p class="text-sm font-medium text-blue-800">Your Meter</p>
+                                        <p class="text-lg font-bold text-blue-900">{{ current_user.serial_number }}</p>
+                                    </div>
+                                </div>
+                                <input type="hidden" id="meter_serial_number" name="meter_serial_number" value="{{ current_user.serial_number }}">
+                            </div>
+                            {% else %}
+                            <div class="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
+                                <div class="flex">
+                                    <div class="flex-shrink-0">
+                                        <i class="fas fa-exclamation-triangle text-yellow-400"></i>
+                                    </div>
+                                    <div class="ml-3">
+                                        <p class="text-sm text-yellow-700">
+                                            No meter associated with your account. Please contact an administrator.
+                                        </p>
+                                    </div>
+                                </div>
+                            </div>
+                            {% endif %}
+                        {% endif %}
+
+                        <!-- Recharge Amount -->
+                        <div>
+                            <label for="recharge_amount" class="block text-sm font-medium text-gray-700 mb-2">
+                                <i class="fas fa-money-bill-wave mr-1 text-gray-400"></i>
+                                Recharge Amount (RWF)
+                            </label>
+                            <div class="relative rounded-md shadow-sm">
+                                <input type="number" id="recharge_amount" name="recharge_amount" 
+                                       step="0.01" min="1" required
+                                       class="block w-full px-4 py-3 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+                                       placeholder="Enter amount"
+                                       value="{{ request.form.get('recharge_amount', '') }}">
+                                <div class="absolute inset-y-0 right-0 pr-3 flex items-center pointer-events-none">
+                                    <span class="text-gray-500 sm:text-sm font-medium">RWF</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Conversion Preview -->
+                        <div class="bg-gray-50 rounded-lg p-4">
+                            <div class="flex justify-between items-center">
+                                <span class="text-sm text-gray-600">You will receive:</span>
+                                <span class="text-2xl font-bold text-blue-600" id="creditPreview">0.00</span>
+                            </div>
+                            <div class="flex justify-between items-center mt-1">
+                                <span class="text-xs text-gray-500">Energy credit</span>
+                                <span class="text-xs text-gray-500">kWh</span>
+                            </div>
+                        </div>
+
+                        <!-- Quick Amount Buttons -->
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-2">Quick Amounts</label>
+                            <div class="grid grid-cols-3 gap-2">
+                                <button type="button" onclick="setAmount(1000)" class="quick-amount-btn">1,000</button>
+                                <button type="button" onclick="setAmount(5000)" class="quick-amount-btn">5,000</button>
+                                <button type="button" onclick="setAmount(10000)" class="quick-amount-btn">10,000</button>
+                                <button type="button" onclick="setAmount(20000)" class="quick-amount-btn">20,000</button>
+                                <button type="button" onclick="setAmount(50000)" class="quick-amount-btn">50,000</button>
+                                <button type="button" onclick="setAmount(100000)" class="quick-amount-btn">100,000</button>
+                            </div>
+                        </div>
+
+                        <!-- Submit Button -->
+                        <div>
+                            <button type="submit" id="submitBtn"
+                                    class="w-full flex justify-center items-center py-3 px-4 border border-transparent rounded-md shadow-sm text-lg font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-all duration-200 transform hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed"
+                                    {% if not current_user.is_admin and not current_user.serial_number %}disabled{% endif %}>
+                                <i class="fas fa-credit-card mr-2"></i>
+                                <span id="submitText">Process Recharge</span>
+                                <i class="fas fa-spinner fa-spin hidden ml-2" id="submitSpinner"></i>
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+
+        <!-- Sidebar Information -->
+        <div class="lg:col-span-1 space-y-6">
+            <!-- Current Balance Card -->
+            {% if current_user.serial_number %}
+            <div class="bg-gradient-to-br from-blue-500 to-blue-600 rounded-lg shadow-lg overflow-hidden">
+                <div class="px-6 py-4">
+                    <h3 class="text-lg font-semibold text-white mb-4">
+                        <i class="fas fa-chart-line mr-2"></i>
+                        Current Balance
+                    </h3>
+                    <div class="text-center">
+                        <div class="text-4xl font-bold text-white mb-2" id="currentBalance">Loading...</div>
+                        <p class="text-blue-100 text-sm">kWh</p>
+                    </div>
+                    <div class="mt-4 flex justify-center">
+                        <span class="px-3 py-1 bg-blue-400 bg-opacity-30 rounded-full text-sm text-white" id="meterStatus">
+                            Loading...
+                        </span>
+                    </div>
+                </div>
+            </div>
+            {% endif %}
+
+            <!-- Recent Recharges -->
+            <div class="bg-white rounded-lg shadow-lg overflow-hidden">
+                <div class="px-6 py-4 bg-gray-50 border-b border-gray-200">
+                    <h3 class="text-lg font-semibold text-gray-800">
+                        <i class="fas fa-history mr-2 text-gray-600"></i>
+                        Recent Recharges
+                    </h3>
+                </div>
+                <div class="p-4">
+                    <div id="recentRecharges" class="space-y-3">
+                        <div class="text-center text-gray-500 py-4">
+                            <i class="fas fa-spinner fa-spin mr-2"></i>
+                            Loading...
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Information Card -->
+            <div class="bg-gray-50 rounded-lg shadow-lg p-6">
+                <h3 class="text-lg font-semibold text-gray-800 mb-4">
+                    <i class="fas fa-info-circle mr-2 text-blue-500"></i>
+                    Information
+                </h3>
+                <div class="space-y-3 text-sm text-gray-600">
+                    <p class="flex items-start">
+                        <i class="fas fa-check-circle text-green-500 mr-2 mt-0.5"></i>
+                        Minimum recharge: <span class="font-medium ml-1">1 RWF</span>
+                    </p>
+                    <p class="flex items-start">
+                        <i class="fas fa-check-circle text-green-500 mr-2 mt-0.5"></i>
+                        Conversion rate: <span class="font-medium ml-1">{{ "%.4f"|format(config.CONVERSION_RATE|default(0.0047)) }} kWh/RWF</span>
+                    </p>
+                    <p class="flex items-start">
+                        <i class="fas fa-check-circle text-green-500 mr-2 mt-0.5"></i>
+                        Credit is added instantly
+                    </p>
+                    <p class="flex items-start">
+                        <i class="fas fa-check-circle text-green-500 mr-2 mt-0.5"></i>
+                        SMS alert at low balance
+                    </p>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Transaction Success Modal -->
+<div id="successModal" class="fixed inset-0 z-50 hidden overflow-y-auto" aria-labelledby="modal-title" role="dialog" aria-modal="true">
+    <div class="flex items-end justify-center min-h-screen pt-4 px-4 pb-20 text-center sm:block sm:p-0">
+        <div class="fixed inset-0 bg-gray-500 bg-opacity-75 transition-opacity" aria-hidden="true"></div>
+        <span class="hidden sm:inline-block sm:align-middle sm:h-screen" aria-hidden="true">&#8203;</span>
+        <div class="inline-block align-bottom bg-white rounded-lg text-left overflow-hidden shadow-xl transform transition-all sm:my-8 sm:align-middle sm:max-w-lg sm:w-full">
+            <div class="bg-white px-4 pt-5 pb-4 sm:p-6 sm:pb-4">
+                <div class="sm:flex sm:items-start">
+                    <div class="mx-auto flex-shrink-0 flex items-center justify-center h-12 w-12 rounded-full bg-green-100 sm:mx-0 sm:h-10 sm:w-10">
+                        <i class="fas fa-check-circle text-green-600 text-xl"></i>
+                    </div>
+                    <div class="mt-3 text-center sm:mt-0 sm:ml-4 sm:text-left">
+                        <h3 class="text-lg leading-6 font-medium text-gray-900" id="modal-title">
+                            Recharge Successful!
+                        </h3>
+                        <div class="mt-2">
+                            <p class="text-sm text-gray-500" id="modalMessage">
+                                Your meter has been recharged successfully.
+                            </p>
+                        </div>
+                        <div class="mt-4 p-3 bg-gray-50 rounded-md">
+                            <div class="flex justify-between text-sm">
+                                <span class="text-gray-600">New Balance:</span>
+                                <span class="font-bold text-green-600" id="modalNewBalance">0.00 kWh</span>
+                            </div>
+                            <div class="flex justify-between text-sm mt-2">
+                                <span class="text-gray-600">Credit Added:</span>
+                                <span class="font-bold text-blue-600" id="modalCreditAdded">0.00 kWh</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="bg-gray-50 px-4 py-3 sm:px-6 sm:flex sm:flex-row-reverse">
+                <button type="button" onclick="closeSuccessModal()" 
+                        class="w-full inline-flex justify-center rounded-md border border-transparent shadow-sm px-4 py-2 bg-blue-600 text-base font-medium text-white hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 sm:ml-3 sm:w-auto sm:text-sm">
+                    OK
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .quick-amount-btn {
+        @apply py-2 px-3 bg-gray-100 hover:bg-gray-200 rounded-md text-sm font-medium text-gray-700 transition-colors duration-200;
+    }
+    .quick-amount-btn:active {
+        @apply transform scale-95;
+    }
+</style>
+
+<script>
+    // Configuration
+    const CONVERSION_RATE = {{ config.CONVERSION_RATE|default(0.0047) }};
+    const CURRENT_USER_SERIAL = {% if current_user.serial_number %}'{{ current_user.serial_number }}'{% else %}null{% endif %};
+    const IS_ADMIN = {{ 'true' if current_user.is_admin else 'false' }};
+
+    // Get CSRF token from meta tag or hidden input
+    function getCSRFToken() {
+        // Try to get from meta tag first
+        const metaToken = document.querySelector('meta[name="csrf-token"]');
+        if (metaToken) {
+            return metaToken.getAttribute('content');
+        }
+        // Fallback to hidden input
+        const inputToken = document.getElementById('csrf_token');
+        return inputToken ? inputToken.value : null;
+    }
+
+    // Update credit preview
+    function updateCreditPreview() {
+        const amount = parseFloat(document.getElementById('recharge_amount').value) || 0;
+        const credit = amount * CONVERSION_RATE;
+        document.getElementById('creditPreview').textContent = credit.toFixed(2);
+    }
+
+    // Set amount from quick buttons
+    function setAmount(amount) {
+        document.getElementById('recharge_amount').value = amount;
+        updateCreditPreview();
+        document.getElementById('recharge_amount').focus();
+    }
+
+    // Show success modal
+    function showSuccessModal(newBalance, creditAdded) {
+        document.getElementById('modalNewBalance').textContent = newBalance.toFixed(2) + ' kWh';
+        document.getElementById('modalCreditAdded').textContent = creditAdded.toFixed(2) + ' kWh';
+        document.getElementById('successModal').classList.remove('hidden');
+    }
+
+    // Close success modal
+    function closeSuccessModal() {
+        document.getElementById('successModal').classList.add('hidden');
+    }
+
+    // Show notification
+    function showNotification(message, type = 'info') {
+        const notification = document.createElement('div');
+        notification.className = `fixed top-4 right-4 z-50 p-4 rounded-md shadow-lg ${
+            type === 'success' ? 'bg-green-50 border-green-200' :
+            type === 'error' ? 'bg-red-50 border-red-200' :
+            'bg-blue-50 border-blue-200'
+        } border max-w-md animate-slide-in`;
+        
+        notification.innerHTML = `
+            <div class="flex items-start">
+                <div class="flex-shrink-0">
+                    <i class="fas ${
+                        type === 'success' ? 'fa-check-circle text-green-400' :
+                        type === 'error' ? 'fa-exclamation-circle text-red-400' :
+                        'fa-info-circle text-blue-400'
+                    } text-lg"></i>
+                </div>
+                <div class="ml-3 flex-1">
+                    <p class="text-sm ${
+                        type === 'success' ? 'text-green-700' :
+                        type === 'error' ? 'text-red-700' :
+                        'text-blue-700'
+                    }">${message}</p>
+                </div>
+                <div class="ml-4 flex-shrink-0">
+                    <button onclick="this.closest('.fixed').remove()" class="inline-flex text-gray-400 hover:text-gray-500">
+                        <i class="fas fa-times"></i>
+                    </button>
+                </div>
+            </div>
+        `;
+        
+        document.body.appendChild(notification);
+        
+        setTimeout(() => {
+            if (notification.parentNode) {
+                notification.remove();
+            }
+        }, 5000);
+    }
+
+    // Load current balance
+    async function loadCurrentBalance() {
+        if (!CURRENT_USER_SERIAL && !IS_ADMIN) return;
+        
+        const serial = IS_ADMIN ? document.getElementById('meter_serial_number')?.value : CURRENT_USER_SERIAL;
+        if (!serial) return;
+        
+        try {
+            const response = await fetch(`/api/meter_status?serial_number=${serial}`);
+            const data = await response.json();
+            
+            if (data.success) {
+                document.getElementById('currentBalance').textContent = data.data.balance.toFixed(2);
+                document.getElementById('meterStatus').textContent = data.data.status;
+                
+                // Update status color
+                const statusEl = document.getElementById('meterStatus');
+                if (data.data.status === 'Low Balance') {
+                    statusEl.className = 'px-3 py-1 bg-red-400 bg-opacity-30 rounded-full text-sm text-white';
+                } else {
+                    statusEl.className = 'px-3 py-1 bg-green-400 bg-opacity-30 rounded-full text-sm text-white';
+                }
+            }
+        } catch (error) {
+            console.error('Error loading balance:', error);
+        }
+    }
+
+    // Load recent recharges
+    async function loadRecentRecharges() {
+        const serial = IS_ADMIN ? document.getElementById('meter_serial_number')?.value : CURRENT_USER_SERIAL;
+        if (!serial) {
+            document.getElementById('recentRecharges').innerHTML = `
+                <div class="text-center text-gray-500 py-4">
+                    <i class="fas fa-info-circle mr-2"></i>
+                    Select a meter to view recharges
+                </div>
+            `;
+            return;
+        }
+        
+        try {
+            const response = await fetch(`/api/recharges?serial_number=${serial}`);
+            const data = await response.json();
+            
+            const container = document.getElementById('recentRecharges');
+            
+            if (data.success && data.data && data.data.length > 0) {
+                container.innerHTML = '';
+                data.data.slice(0, 5).forEach(item => {
+                    const date = new Date(item.timestamp).toLocaleString();
+                    const amount = item.recharge_amount;
+                    const isPositive = amount > 0;
+                    
+                    const div = document.createElement('div');
+                    div.className = 'flex justify-between items-center p-2 hover:bg-gray-50 rounded-md transition-colors';
+                    div.innerHTML = `
+                        <div>
+                            <p class="text-xs text-gray-500">${date}</p>
+                            <p class="text-sm font-medium ${isPositive ? 'text-green-600' : 'text-red-600'}">
+                                ${isPositive ? '+' : ''}${amount.toFixed(2)} kWh
+                            </p>
+                        </div>
+                        <span class="text-xs ${isPositive ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'} px-2 py-1 rounded-full">
+                            ${isPositive ? 'Recharge' : 'Consumption'}
+                        </span>
+                    `;
+                    container.appendChild(div);
+                });
+            } else {
+                container.innerHTML = `
+                    <div class="text-center text-gray-500 py-4">
+                        <i class="fas fa-history mr-2"></i>
+                        No recharge history found
+                    </div>
+                `;
+            }
+        } catch (error) {
+            console.error('Error loading recharges:', error);
+            document.getElementById('recentRecharges').innerHTML = `
+                <div class="text-center text-red-500 py-4">
+                    <i class="fas fa-exclamation-circle mr-2"></i>
+                    Error loading data
+                </div>
+            `;
+        }
+    }
+
+    // Handle meter selection change (for admin)
+    if (IS_ADMIN) {
+        document.getElementById('meter_serial_number')?.addEventListener('change', function() {
+            loadCurrentBalance();
+            loadRecentRecharges();
+        });
+    }
+
+    // Form submission - AJAX version with CSRF token
+    document.getElementById('rechargeForm').addEventListener('submit', async function(event) {
+        event.preventDefault();
+        
+        const form = event.target;
+        const formData = new FormData(form);
+        const data = Object.fromEntries(formData.entries());
+        
+        // Get CSRF token
+        const csrfToken = getCSRFToken();
+        if (!csrfToken) {
+            showNotification('CSRF token not found. Please refresh the page.', 'error');
+            return;
+        }
+        
+        // Validate amount
+        const amount = parseFloat(data.recharge_amount);
+        if (amount < 1) {
+            showNotification('Please enter a valid amount (minimum 1 RWF)', 'error');
+            return;
+        }
+        
+        // Show loading state
+        const submitBtn = document.getElementById('submitBtn');
+        const submitText = document.getElementById('submitText');
+        const submitSpinner = document.getElementById('submitSpinner');
+        
+        submitBtn.disabled = true;
+        submitText.textContent = 'Processing...';
+        submitSpinner.classList.remove('hidden');
+        
+        try {
+            const response = await fetch('/api/recharge', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRFToken': csrfToken  // Send CSRF token in header
+                },
+                body: JSON.stringify(data),
+                credentials: 'same-origin'  // Include cookies
+            });
+            
+            const result = await response.json();
+            
+            if (response.ok && result.success) {
+                // Show success modal
+                showSuccessModal(result.new_balance, result.credit_amount || (amount * CONVERSION_RATE));
+                
+                // Reset form
+                document.getElementById('recharge_amount').value = '';
+                updateCreditPreview();
+                
+                // Refresh data
+                loadCurrentBalance();
+                loadRecentRecharges();
+                
+                // Show success notification
+                showNotification(result.message || 'Recharge successful!', 'success');
+            } else {
+                // Show error
+                showNotification(result.error || 'Recharge failed', 'error');
+            }
+        } catch (error) {
+            console.error('Error:', error);
+            showNotification('Network error. Please try again.', 'error');
+        } finally {
+            // Restore button state
+            submitBtn.disabled = false;
+            submitText.textContent = 'Process Recharge';
+            submitSpinner.classList.add('hidden');
+        }
+    });
+
+    // Fallback: If you want to support traditional form submission without AJAX
+    // Uncomment this if you want to also support traditional form submission
+    /*
+    document.getElementById('rechargeForm').addEventListener('submit', function(event) {
+        // Check if it's an AJAX submission? If not, let it submit normally
+        // This is handled by the preventDefault() above
+    });
+    */
+
+    // Update preview on amount change
+    document.getElementById('recharge_amount').addEventListener('input', updateCreditPreview);
+
+    // Load initial data
+    document.addEventListener('DOMContentLoaded', function() {
+        updateCreditPreview();
+        loadCurrentBalance();
+        loadRecentRecharges();
+        
+        // Refresh balance every 30 seconds
+        setInterval(loadCurrentBalance, 30000);
+    });
+</script>
+
+<style>
+    @keyframes slideIn {
+        from {
+            transform: translateX(100%);
+            opacity: 0;
+        }
+        to {
+            transform: translateX(0);
+            opacity: 1;
+        }
+    }
+    
+    .animate-slide-in {
+        animation: slideIn 0.3s ease-out;
+    }
+</style>
+{% endblock %}

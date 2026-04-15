@@ -1,0 +1,696 @@
+{% extends "base.html" %}
+
+{% block title %}Payment Predictions - Energy Meter System{% endblock %}
+
+{% block content %}
+<div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+    <!-- Page Header -->
+    <div class="mb-8">
+        <h1 class="text-3xl font-bold text-gray-900">Payment Predictions</h1>
+        <p class="mt-2 text-sm text-gray-600">
+            Predict future payments based on historical data using machine learning
+        </p>
+    </div>
+
+    {% if not loaded_model %}
+    <div class="mb-8 rounded-md bg-yellow-50 border border-yellow-200 p-4">
+        <div class="flex">
+            <div class="flex-shrink-0">
+                <svg class="h-5 w-5 text-yellow-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
+                </svg>
+            </div>
+            <div class="ml-3">
+                <h3 class="text-sm font-medium text-yellow-800">Model Not Available</h3>
+                <div class="mt-2 text-sm text-yellow-700">
+                    <p>The prediction model is not loaded. Using fallback calculation instead.</p>
+                    <p class="mt-1 text-xs">To enable ML predictions, ensure the model file exists or create a sample model.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
+        <!-- Manual Prediction Form -->
+        <div class="bg-white rounded-xl shadow-lg overflow-hidden transition-transform hover:shadow-xl">
+            <div class="px-6 py-4 bg-gradient-to-r from-blue-600 to-blue-700">
+                <h2 class="text-xl font-semibold text-white flex items-center">
+                    <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 7h6m0 10v-3m-3 3h.01M9 17h.01M9 14h.01M12 14h.01M15 11h.01M12 11h.01M9 11h.01M7 21h10a2 2 0 002-2V5a2 2 0 00-2-2H7a2 2 0 00-2 2v14a2 2 0 002 2z"></path>
+                    </svg>
+                     Prediction
+                </h2>
+            </div>
+            
+            <div class="p-6">
+                <p class="text-sm text-gray-600 mb-6">
+                    Enter payment amounts to get a prediction using our ML model
+                </p>
+                
+                <form id="manualPredictForm" class="space-y-6">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    
+                    <div>
+                        <label for="prev_month" class="block text-sm font-medium text-gray-700 mb-2">
+                            Previous Month Payment (RWF)
+                        </label>
+                        <input type="number" id="prev_month" name="previous_month_payment" 
+                               step="0.01" min="0" required
+                               class="block w-full px-4 py-2 border border-gray-300 rounded-lg shadow-sm focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+                               placeholder="e.g., 5000.00">
+                        <p class="mt-1 text-xs text-gray-500">Amount paid in the previous month</p>
+                    </div>
+
+                    <div>
+                        <label for="two_months_ago" class="block text-sm font-medium text-gray-700 mb-2">
+                            Two Months Ago Payment (RWF)
+                        </label>
+                        <input type="number" id="two_months_ago" name="two_months_ago_payment" 
+                               step="0.01" min="0" required
+                               class="block w-full px-4 py-2 border border-gray-300 rounded-lg shadow-sm focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+                               placeholder="e.g., 4500.00">
+                        <p class="mt-1 text-xs text-gray-500">Amount paid two months ago</p>
+                    </div>
+
+                    <button type="submit" id="manualPredictBtn"
+                            class="w-full flex justify-center items-center py-3 px-4 border border-transparent rounded-lg shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-all duration-200 transform hover:scale-[1.02]">
+                        <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 7h6m0 10v-3m-3 3h.01M9 17h.01M9 14h.01M12 14h.01M15 11h.01M12 11h.01M9 11h.01M7 21h10a2 2 0 002-2V5a2 2 0 00-2-2H7a2 2 0 00-2 2v14a2 2 0 002 2z"></path>
+                        </svg>
+                        <span id="manualPredictText">Calculate Prediction</span>
+                        <svg class="hidden w-5 h-5 ml-2 animate-spin" id="manualPredictSpinner" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                        </svg>
+                    </button>
+                </form>
+
+                <!-- Result Card -->
+                <div id="manualResult" class="mt-6 hidden">
+                    <div class="bg-gradient-to-r from-green-50 to-emerald-50 border border-green-200 rounded-lg p-5">
+                        <div class="flex items-start">
+                            <div class="flex-shrink-0">
+                                <svg class="h-6 w-6 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                                </svg>
+                            </div>
+                            <div class="ml-3 flex-1">
+                                <h3 class="text-sm font-medium text-green-800">Predicted Payment</h3>
+                                <div class="mt-2">
+                                    <span class="text-3xl font-bold text-green-600" id="predictedAmount">0.00</span>
+                                    <span class="text-lg text-green-600"> RWF</span>
+                                </div>
+                                <p class="mt-2 text-xs text-green-600">Based on your input data using ML model</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Meter-Based Prediction -->
+        <div class="bg-white rounded-xl shadow-lg overflow-hidden transition-transform hover:shadow-xl">
+            <div class="px-6 py-4 bg-gradient-to-r from-green-600 to-green-700">
+                <h2 class="text-xl font-semibold text-white flex items-center">
+                    <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 3v2m6-2v2M9 19v2m6-2v2M5 3h14a2 2 0 012 2v14a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2zm3 8h2v2H8v-2zm6 0h2v2h-2v-2z"></path>
+                    </svg>
+                    Predict from Meter History
+                </h2>
+            </div>
+            
+            <div class="p-6">
+                <p class="text-sm text-gray-600 mb-6">
+                    Select a meter to predict based on its recharge history
+                </p>
+                
+                <form id="meterPredictForm" class="space-y-6">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    
+                    <div>
+                        <label for="meter_select" class="block text-sm font-medium text-gray-700 mb-2">
+                            Select Meter
+                        </label>
+                        <select id="meter_select" name="serial_number" required
+                                class="block w-full px-4 py-2 border border-gray-300 rounded-lg shadow-sm focus:ring-green-500 focus:border-green-500 sm:text-sm">
+                            <option value="">Choose a meter...</option>
+                            {% if meters %}
+                                {% for meter in meters %}
+                                    <option value="{{ meter.serial_number }}">
+                                        {{ meter.serial_number }} - {{ meter.owner_name }} (Balance: {{ meter.balance }} RWF)
+                                    </option>
+                                {% endfor %}
+                            {% endif %}
+                        </select>
+                        <p class="mt-1 text-xs text-gray-500">Uses last 2 months of recharge history</p>
+                    </div>
+
+                    <button type="submit" id="meterPredictBtn"
+                            class="w-full flex justify-center items-center py-3 px-4 border border-transparent rounded-lg shadow-sm text-sm font-medium text-white bg-green-600 hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 transition-all duration-200 transform hover:scale-[1.02]">
+                        <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"></path>
+                        </svg>
+                        <span id="meterPredictText">Get Prediction</span>
+                        <svg class="hidden w-5 h-5 ml-2 animate-spin" id="meterPredictSpinner" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                        </svg>
+                    </button>
+                </form>
+
+                <!-- Result Card -->
+                <div id="meterResult" class="mt-6 hidden">
+                    <div class="bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200 rounded-lg p-5">
+                        <div class="flex items-start">
+                            <div class="flex-shrink-0">
+                                <svg class="h-6 w-6 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path>
+                                </svg>
+                            </div>
+                            <div class="ml-3 flex-1">
+                                <h3 class="text-sm font-medium text-blue-800">Predicted Next Payment</h3>
+                                <div class="mt-2">
+                                    <span class="text-3xl font-bold text-blue-600" id="meterPredictedAmount">0.00</span>
+                                    <span class="text-lg text-blue-600"> RWF</span>
+                                </div>
+                                <p class="mt-2 text-xs text-blue-600" id="predictionNote"></p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Historical Data Chart -->
+    <div class="mt-8">
+        <div class="bg-white rounded-xl shadow-lg overflow-hidden">
+            <div class="px-6 py-4 bg-gradient-to-r from-purple-600 to-purple-700">
+                <div class="flex justify-between items-center">
+                    <h3 class="text-lg font-semibold text-white flex items-center">
+                        <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 12l3-3 3 3 4-4M8 21l4-4 4 4M3 4h18M4 4h16v12a1 1 0 01-1 1H5a1 1 0 01-1-1V4z"></path>
+                        </svg>
+                        Historical Payment Trends
+                    </h3>
+                    <button onclick="refreshChart()" class="text-white hover:text-purple-200 transition-colors">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
+                        </svg>
+                    </button>
+                </div>
+            </div>
+            <div class="p-6">
+                <div class="relative" style="height: 350px;">
+                    <canvas id="paymentTrendsChart"></canvas>
+                </div>
+                <div id="chartNoData" class="hidden text-center py-12 text-gray-500">
+                    <svg class="mx-auto h-12 w-12 text-gray-400 mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"></path>
+                    </svg>
+                    <p>No historical data available</p>
+                    <p class="text-xs mt-2">Recharge data will appear here once available</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Model Status & Info -->
+    <div class="mt-8 grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div class="bg-gray-50 rounded-lg p-4">
+            <div class="flex items-center">
+                <div class="flex-shrink-0">
+                    <svg class="h-5 w-5 {% if loaded_model %}text-green-500{% else %}text-yellow-500{% endif %}" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                    </svg>
+                </div>
+                <div class="ml-3">
+                    <p class="text-xs text-gray-600">Model Status:</p>
+                    <p class="text-sm font-semibold {% if loaded_model %}text-green-600{% else %}text-yellow-600{% endif %}">
+                        {% if loaded_model %}✓ ML Model Active{% else %}⚠ Fallback Mode Active{% endif %}
+                    </p>
+                </div>
+            </div>
+        </div>
+        
+        <div class="bg-gray-50 rounded-lg p-4">
+            <div class="flex items-center">
+                <div class="flex-shrink-0">
+                    <svg class="h-5 w-5 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                    </svg>
+                </div>
+                <div class="ml-3">
+                    <p class="text-xs text-gray-600">Prediction Method:</p>
+                    <p class="text-sm font-semibold text-blue-600">
+                        {% if loaded_model %}Machine Learning (XGBoost){% else %}Weighted Average (70/30){% endif %}
+                    </p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Info Cards -->
+    <div class="mt-6 grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div class="bg-white rounded-lg shadow p-4 border border-gray-100">
+            <div class="flex items-center">
+                <div class="flex-shrink-0 bg-blue-100 rounded-lg p-2">
+                    <svg class="h-5 w-5 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"></path>
+                    </svg>
+                </div>
+                <div class="ml-3">
+                    <p class="text-xs text-gray-500">Data Points</p>
+                    <p class="text-sm font-semibold">2-month payment history</p>
+                </div>
+            </div>
+        </div>
+        
+        <div class="bg-white rounded-lg shadow p-4 border border-gray-100">
+            <div class="flex items-center">
+                <div class="flex-shrink-0 bg-green-100 rounded-lg p-2">
+                    <svg class="h-5 w-5 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                    </svg>
+                </div>
+                <div class="ml-3">
+                    <p class="text-xs text-gray-500">Accuracy</p>
+                    <p class="text-sm font-semibold">High confidence</p>
+                </div>
+            </div>
+        </div>
+        
+        <div class="bg-white rounded-lg shadow p-4 border border-gray-100">
+            <div class="flex items-center">
+                <div class="flex-shrink-0 bg-purple-100 rounded-lg p-2">
+                    <svg class="h-5 w-5 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path>
+                    </svg>
+                </div>
+                <div class="ml-3">
+                    <p class="text-xs text-gray-500">Model Type</p>
+                    <p class="text-sm font-semibold">Regression Analysis</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script>
+    let trendChart = null;
+
+    // Fallback prediction function (70/30 weighted average)
+    function fallbackPredict(prev, twoMonths) {
+        return (prev * 0.7) + (twoMonths * 0.3);
+    }
+
+    // Show notification
+    function showNotification(message, type = 'info') {
+        const notification = document.createElement('div');
+        notification.className = `fixed top-20 right-4 z-50 p-4 rounded-lg shadow-lg transform transition-all duration-300 ${
+            type === 'success' ? 'bg-green-50 border border-green-200' :
+            type === 'error' ? 'bg-red-50 border border-red-200' :
+            'bg-blue-50 border border-blue-200'
+        } max-w-md`;
+        
+        notification.innerHTML = `
+            <div class="flex items-start">
+                <div class="flex-shrink-0">
+                    <svg class="h-5 w-5 ${
+                        type === 'success' ? 'text-green-500' :
+                        type === 'error' ? 'text-red-500' :
+                        'text-blue-500'
+                    }" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="${
+                            type === 'success' ? 'M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z' :
+                            type === 'error' ? 'M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z' :
+                            'M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z'
+                        }"></path>
+                    </svg>
+                </div>
+                <div class="ml-3 flex-1">
+                    <p class="text-sm ${
+                        type === 'success' ? 'text-green-700' :
+                        type === 'error' ? 'text-red-700' :
+                        'text-blue-700'
+                    }">${message}</p>
+                </div>
+                <div class="ml-4 flex-shrink-0">
+                    <button onclick="this.closest('.fixed').remove()" class="inline-flex text-gray-400 hover:text-gray-500">
+                        <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                        </svg>
+                    </button>
+                </div>
+            </div>
+        `;
+        
+        document.body.appendChild(notification);
+        
+        setTimeout(() => {
+            if (notification.parentNode) {
+                notification.classList.add('opacity-0');
+                setTimeout(() => notification.remove(), 300);
+            }
+        }, 5000);
+    }
+
+    // Manual prediction
+    document.getElementById('manualPredictForm').addEventListener('submit', async function(e) {
+        e.preventDefault();
+        
+        const formData = new FormData(this);
+        const data = Object.fromEntries(formData.entries());
+        
+        const prev = parseFloat(data.previous_month_payment);
+        const twoMonths = parseFloat(data.two_months_ago_payment);
+        
+        if (isNaN(prev) || isNaN(twoMonths)) {
+            showNotification('Please enter valid numbers', 'error');
+            return;
+        }
+        
+        if (prev < 0 || twoMonths < 0) {
+            showNotification('Please enter positive amounts', 'error');
+            return;
+        }
+        
+        // Show loading
+        const btn = document.getElementById('manualPredictBtn');
+        const btnText = document.getElementById('manualPredictText');
+        const spinner = document.getElementById('manualPredictSpinner');
+        
+        btn.disabled = true;
+        btnText.textContent = 'Calculating...';
+        spinner.classList.remove('hidden');
+        
+        try {
+            {% if loaded_model %}
+            // Use ML model
+            const response = await fetch('/predict', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRFToken': data.csrf_token
+                },
+                body: JSON.stringify({
+                    previous_month_payment: prev,
+                    two_months_ago_payment: twoMonths
+                })
+            });
+            
+            const result = await response.json();
+            
+            if (result.success) {
+                document.getElementById('predictedAmount').textContent = 
+                    result.data.predicted_payment.toFixed(2);
+                document.getElementById('manualResult').classList.remove('hidden');
+                showNotification('Prediction calculated successfully', 'success');
+                
+                // Scroll to result
+                document.getElementById('manualResult').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            } else {
+                showNotification(result.error || 'Prediction failed', 'error');
+            }
+            {% else %}
+            // Use fallback
+            const prediction = fallbackPredict(prev, twoMonths);
+            document.getElementById('predictedAmount').textContent = prediction.toFixed(2);
+            document.getElementById('manualResult').classList.remove('hidden');
+            showNotification('Prediction calculated (fallback mode)', 'info');
+            {% endif %}
+            
+        } catch (error) {
+            console.error('Error:', error);
+            showNotification('Error calculating prediction', 'error');
+        } finally {
+            btn.disabled = false;
+            btnText.textContent = 'Calculate Prediction';
+            spinner.classList.add('hidden');
+        }
+    });
+
+    // Meter-based prediction
+    document.getElementById('meterPredictForm').addEventListener('submit', async function(e) {
+        e.preventDefault();
+        
+        const formData = new FormData(this);
+        const data = Object.fromEntries(formData.entries());
+        
+        if (!data.serial_number) {
+            showNotification('Please select a meter', 'error');
+            return;
+        }
+        
+        // Show loading
+        const btn = document.getElementById('meterPredictBtn');
+        const btnText = document.getElementById('meterPredictText');
+        const spinner = document.getElementById('meterPredictSpinner');
+        
+        btn.disabled = true;
+        btnText.textContent = 'Getting prediction...';
+        spinner.classList.remove('hidden');
+        
+        try {
+            {% if loaded_model %}
+            // Use ML model
+            const response = await fetch('/predictx', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRFToken': data.csrf_token
+                },
+                body: JSON.stringify({
+                    serial_number: data.serial_number
+                })
+            });
+            
+            const result = await response.json();
+            
+            if (result.success) {
+                document.getElementById('meterPredictedAmount').textContent = 
+                    result.data.predicted_payment.toFixed(2);
+                document.getElementById('predictionNote').textContent = 
+                    'Based on last 2 months of recharge history using ML model';
+                document.getElementById('meterResult').classList.remove('hidden');
+                showNotification('Prediction generated successfully', 'success');
+                
+                // Scroll to result
+                document.getElementById('meterResult').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            } else {
+                showNotification(result.error || 'Prediction failed', 'error');
+            }
+            {% else %}
+            // Try to get meter data for fallback
+            const meterResponse = await fetch(`/api/recharges?serial_number=${data.serial_number}`);
+            const meterData = await meterResponse.json();
+            
+            if (meterData && Array.isArray(meterData) && meterData.length >= 2) {
+                // Get the two most recent recharges (positive amounts)
+                const recharges = meterData.filter(r => r.recharge_amount > 0).slice(0, 2);
+                if (recharges.length >= 2) {
+                    const prev = recharges[0].recharge_amount;
+                    const twoMonths = recharges[1].recharge_amount;
+                    const prediction = fallbackPredict(prev, twoMonths);
+                    
+                    document.getElementById('meterPredictedAmount').textContent = prediction.toFixed(2);
+                    document.getElementById('predictionNote').textContent = 
+                        'Based on actual recharge history (fallback mode - weighted average)';
+                    document.getElementById('meterResult').classList.remove('hidden');
+                    showNotification('Prediction generated (fallback mode)', 'info');
+                } else {
+                    showNotification('Insufficient recharge history (need 2 months)', 'error');
+                }
+            } else {
+                showNotification('No recharge history found for this meter', 'error');
+            }
+            {% endif %}
+            
+        } catch (error) {
+            console.error('Error:', error);
+            showNotification('Error getting prediction', 'error');
+        } finally {
+            btn.disabled = false;
+            btnText.textContent = 'Get Prediction';
+            spinner.classList.add('hidden');
+        }
+    });
+
+    // Load payment trends chart
+    async function loadPaymentTrends() {
+        try {
+            const response = await fetch('/api/get_recharges');
+            const data = await response.json();
+            
+            const ctx = document.getElementById('paymentTrendsChart').getContext('2d');
+            
+            if (trendChart) {
+                trendChart.destroy();
+            }
+            
+            if (data && data.length > 0) {
+                // Group by month
+                const monthlyData = {};
+                data.forEach(item => {
+                    if (item.recharge_amount > 0) { // Only positive recharges
+                        const date = new Date(item.timestamp);
+                        const monthYear = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+                        if (!monthlyData[monthYear]) {
+                            monthlyData[monthYear] = 0;
+                        }
+                        monthlyData[monthYear] += item.recharge_amount;
+                    }
+                });
+                
+                const sortedMonths = Object.keys(monthlyData).sort().slice(-6);
+                const amounts = sortedMonths.map(month => monthlyData[month]);
+                
+                trendChart = new Chart(ctx, {
+                    type: 'line',
+                    data: {
+                        labels: sortedMonths,
+                        datasets: [{
+                            label: 'Total Recharges (RWF)',
+                            data: amounts,
+                            borderColor: 'rgb(139, 92, 246)',
+                            backgroundColor: 'rgba(139, 92, 246, 0.1)',
+                            tension: 0.4,
+                            fill: true,
+                            pointBackgroundColor: 'rgb(139, 92, 246)',
+                            pointBorderColor: 'white',
+                            pointBorderWidth: 2,
+                            pointRadius: 5,
+                            pointHoverRadius: 7
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: {
+                                display: true,
+                                position: 'top',
+                                labels: {
+                                    usePointStyle: true,
+                                    boxWidth: 10
+                                }
+                            },
+                            tooltip: {
+                                callbacks: {
+                                    label: function(context) {
+                                        return `Amount: ${context.raw.toFixed(2)} RWF`;
+                                    }
+                                }
+                            }
+                        },
+                        scales: {
+                            y: {
+                                beginAtZero: true,
+                                grid: {
+                                    color: 'rgba(0, 0, 0, 0.05)'
+                                },
+                                title: {
+                                    display: true,
+                                    text: 'Amount (RWF)',
+                                    color: '#6B7280'
+                                }
+                            },
+                            x: {
+                                grid: {
+                                    display: false
+                                },
+                                title: {
+                                    display: true,
+                                    text: 'Month',
+                                    color: '#6B7280'
+                                }
+                            }
+                        }
+                    }
+                });
+                
+                document.getElementById('chartNoData').classList.add('hidden');
+            } else {
+                document.getElementById('chartNoData').classList.remove('hidden');
+            }
+        } catch (error) {
+            console.error('Error loading chart:', error);
+            document.getElementById('chartNoData').classList.remove('hidden');
+        }
+    }
+
+    function refreshChart() {
+        loadPaymentTrends();
+        showNotification('Chart refreshed', 'info');
+    }
+
+    // Load meters for dropdown
+    async function loadMeters() {
+        try {
+            const response = await fetch('/api/registered_meters');
+            const data = await response.json();
+            
+            if (data.success && data.data) {
+                const select = document.getElementById('meter_select');
+                select.innerHTML = '<option value="">Choose a meter...</option>';
+                
+                data.data.forEach(meter => {
+                    const option = document.createElement('option');
+                    option.value = meter.serial_number;
+                    option.textContent = `${meter.serial_number} - ${meter.owner_name} (Balance: ${meter.balance} RWF)`;
+                    select.appendChild(option);
+                });
+            }
+        } catch (error) {
+            console.error('Error loading meters:', error);
+        }
+    }
+
+    // Load data on page load
+    document.addEventListener('DOMContentLoaded', function() {
+        loadMeters();
+        loadPaymentTrends();
+        
+        // Auto-refresh chart every minute
+        setInterval(loadPaymentTrends, 60000);
+    });
+</script>
+
+<style>
+    @keyframes slideIn {
+        from {
+            transform: translateX(100%);
+            opacity: 0;
+        }
+        to {
+            transform: translateX(0);
+            opacity: 1;
+        }
+    }
+    
+    .animate-slide-in {
+        animation: slideIn 0.3s ease-out;
+    }
+    
+    @keyframes spin {
+        from {
+            transform: rotate(0deg);
+        }
+        to {
+            transform: rotate(360deg);
+        }
+    }
+    
+    .animate-spin {
+        animation: spin 1s linear infinite;
+    }
+    
+    input:focus, select:focus {
+        outline: none;
+        ring: 2px;
+        ring-color: #3B82F6;
+    }
+</style>
+{% endblock %}
