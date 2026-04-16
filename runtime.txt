@@ -1,1 +1,4 @@
-
+echo "python-3.12.8" > runtime.txt
+git add runtime.txt
+git commit -m "Fix Python version to 3.12"
+git push
