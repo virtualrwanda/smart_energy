@@ -864,7 +864,71 @@ def get_meter_status():
         logger.error(f"Error in get_meter_status: {e}")
         return error_response(str(e), 500)
 
+# @app.route('/api/consume', methods=['POST'])
+# def consume():
+#     """Record energy consumption"""
+#     try:
+#         if not request.is_json:
+#             return error_response("Content-Type must be application/json", 400)
+            
+#         data = request.get_json()
+#         serial_number = data.get('meter_serial_number', '').strip()
+#         consumption_amount = data.get('consumption_amount', 0)
+
+#         try:
+#             consumption_amount = float(consumption_amount)
+#         except ValueError:
+#             return error_response("Invalid consumption amount.", 400)
+
+#         if not serial_number or consumption_amount < 0:
+#             return error_response("Invalid serial number or consumption amount.", 400)
+
+#         conn = get_db_connection()
+#         cursor = conn.cursor()
+
+#         cursor.execute('SELECT balance, owner_contact FROM meter_data WHERE serial_number = ?', (serial_number,))
+#         row = cursor.fetchone()
+
+#         if not row:
+#             conn.close()
+#             return error_response("Meter not found.", 404)
+
+#         current_balance = row['balance']
+#         owner_contact = row['owner_contact']
+
+#         if current_balance <= 0:
+#             conn.close()
+#             return error_response("Insufficient balance.", 400)
+
+#         new_balance = max(0, current_balance - consumption_amount)
+
+#         cursor.execute('UPDATE meter_data SET balance = ?, consumption = consumption + ? WHERE serial_number = ?', 
+#                       (new_balance, consumption_amount, serial_number))
+
+#         cursor.execute('''
+#             INSERT INTO recharges (serial_number, recharge_amount, timestamp)
+#             VALUES (?, ?, datetime("now"))
+#         ''', (serial_number, -consumption_amount))
+
+#         conn.commit()
+#         conn.close()
+
+#         sms_status = None
+#         if new_balance <= 1 and owner_contact:
+#             sms_message = f"Alert! Your energy meter balance is low: {new_balance:.2f} kWh. Please recharge soon."
+#             sms_status = send_sms(owner_contact, sms_message)
+
+#         response_data = {"new_balance": new_balance}
+#         if sms_status is not None:
+#             response_data["sms_sent"] = sms_status
+
+#         return success_response(response_data, "Consumption recorded successfully!")
+
+#     except Exception as e:
+#         logger.error(f"Error in consume: {e}")
+#         return error_response(str(e), 500)
 @app.route('/api/consume', methods=['POST'])
+@csrf.exempt
 def consume():
     """Record energy consumption"""
     try:
@@ -905,6 +969,7 @@ def consume():
         cursor.execute('UPDATE meter_data SET balance = ?, consumption = consumption + ? WHERE serial_number = ?', 
                       (new_balance, consumption_amount, serial_number))
 
+        # Log consumption as negative recharge
         cursor.execute('''
             INSERT INTO recharges (serial_number, recharge_amount, timestamp)
             VALUES (?, ?, datetime("now"))
@@ -913,6 +978,7 @@ def consume():
         conn.commit()
         conn.close()
 
+        # Send SMS alert if balance is low
         sms_status = None
         if new_balance <= 1 and owner_contact:
             sms_message = f"Alert! Your energy meter balance is low: {new_balance:.2f} kWh. Please recharge soon."
@@ -927,7 +993,6 @@ def consume():
     except Exception as e:
         logger.error(f"Error in consume: {e}")
         return error_response(str(e), 500)
-
 @app.route('/api/delete/<serial_number>', methods=['DELETE'])
 @api_login_required
 @admin_required
