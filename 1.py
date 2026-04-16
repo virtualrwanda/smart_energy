@@ -827,7 +827,7 @@ def get_recharges():
         return jsonify([])
 
 @app.route('/api/meter_status', methods=['GET'])
-@api_login_required
+#@api_login_required
 def get_meter_status():
     """Get current status of a meter"""
     serial_number = request.args.get('serial_number', '').strip()
