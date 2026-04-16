@@ -575,11 +575,18 @@ def users_page():
     return render_template('users.html')
 
 # ==================== API ROUTES ====================
-@app.route('/api/get_csrf_token', methods=['GET'])
+# @app.route('/api/get_csrf_token', methods=['GET'])
+# def get_csrf_token():
+#     """Return a CSRF token for AJAX requests"""
+#     token = generate_csrf()
+#     return jsonify({'csrf_token': token})
+@app.route('/api/csrf_token', methods=['GET'])
 def get_csrf_token():
-    """Return a CSRF token for AJAX requests"""
-    token = generate_csrf()
-    return jsonify({'csrf_token': token})
+    """Get CSRF token for API clients"""
+    from flask_wtf.csrf import generate_csrf
+    return success_response({
+        'csrf_token': generate_csrf()
+    }, "CSRF token generated")
 
 @app.route('/api/check-auth', methods=['GET'])
 def check_auth():
