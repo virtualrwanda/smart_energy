@@ -1,0 +1,324 @@
+{% extends 'base.html' %}
+{% block title %}My Dashboard - Energy Meter System{% endblock %}
+
+{% block content %}
+<div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+
+    <div class="mb-6">
+        <h1 class="text-2xl font-bold text-gray-900">My Dashboard</h1>
+        <p class="text-sm text-gray-500 mt-1">Welcome, {{ current_user.username }}</p>
+    </div>
+
+    {% if not meter %}
+    <div class="bg-yellow-50 border border-yellow-200 rounded-lg p-6 text-center">
+        <i class="fas fa-exclamation-triangle text-yellow-500 text-3xl mb-3"></i>
+        <p class="text-yellow-700 font-medium">No meter is linked to your account.</p>
+        <p class="text-yellow-600 text-sm mt-1">Please contact an administrator to assign your meter.</p>
+    </div>
+    {% else %}
+
+    <!-- Stats row -->
+    <div class="grid grid-cols-1 sm:grid-cols-3 gap-5 mb-6">
+        <!-- Balance card -->
+        <div class="bg-gradient-to-br from-blue-500 to-blue-600 rounded-xl shadow-lg p-5 text-white">
+            <div class="flex items-center justify-between mb-3">
+                <span class="text-blue-100 text-sm font-medium">Current Balance</span>
+                <i class="fas fa-bolt text-blue-200 text-xl"></i>
+            </div>
+            <div class="text-4xl font-bold" id="liveBalance">{{ "%.2f"|format(meter.balance) }}</div>
+            <div class="text-blue-100 text-sm mt-1">kWh</div>
+            <div class="mt-3">
+                <span id="balanceStatus"
+                      class="px-3 py-1 rounded-full text-xs font-semibold
+                             {% if meter.balance < 0.5 %}bg-red-400 bg-opacity-40{% else %}bg-green-400 bg-opacity-30{% endif %}">
+                    {% if meter.balance < 0.5 %}Low Balance{% else %}Normal{% endif %}
+                </span>
+            </div>
+        </div>
+
+        <!-- Serial card -->
+        <div class="bg-white rounded-xl shadow border border-gray-200 p-5">
+            <div class="flex items-center justify-between mb-3">
+                <span class="text-gray-500 text-sm font-medium">Meter Serial</span>
+                <i class="fas fa-microchip text-gray-400 text-xl"></i>
+            </div>
+            <div class="text-xl font-bold text-gray-800">{{ meter.serial_number }}</div>
+            <div class="text-gray-400 text-sm mt-1">{{ meter.owner_contact }}</div>
+        </div>
+
+        <!-- Loan summary card -->
+        <div class="rounded-xl shadow border p-5
+             {% if active_loan %}
+                 {% if active_loan.status == 'overdue' %}bg-red-50 border-red-200{% else %}bg-orange-50 border-orange-200{% endif %}
+             {% else %}bg-white border-gray-200{% endif %}">
+            <div class="flex items-center justify-between mb-3">
+                <span class="text-sm font-medium
+                    {% if active_loan %}{% if active_loan.status == 'overdue' %}text-red-600{% else %}text-orange-600{% endif %}{% else %}text-gray-500{% endif %}">
+                    Loan Status
+                </span>
+                <i class="fas fa-hand-holding-usd text-xl
+                    {% if active_loan %}{% if active_loan.status == 'overdue' %}text-red-400{% else %}text-orange-400{% endif %}{% else %}text-gray-300{% endif %}"></i>
+            </div>
+            {% if active_loan %}
+            <div class="text-2xl font-bold {% if active_loan.status == 'overdue' %}text-red-700{% else %}text-orange-700{% endif %}">
+                {{ "{:,.0f}".format(active_loan.rwf_to_repay - active_loan.rwf_paid) }} RWF
+            </div>
+            <div class="text-sm mt-1 {% if active_loan.status == 'overdue' %}text-red-500{% else %}text-orange-500{% endif %}">
+                Due {{ active_loan.due_date[:10] }}
+                {% if active_loan.status == 'overdue' %}<span class="ml-1 font-bold">(OVERDUE)</span>{% endif %}
+            </div>
+            {% else %}
+            <div class="text-2xl font-bold text-gray-300">None</div>
+            <div class="text-sm text-gray-400 mt-1">No outstanding loan</div>
+            {% endif %}
+        </div>
+    </div>
+
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+
+        <!-- Left column: loan + request -->
+        <div class="space-y-5">
+
+            <!-- Active loan panel -->
+            {% if active_loan %}
+            <div class="bg-white rounded-xl shadow border {% if active_loan.status == 'overdue' %}border-red-300{% else %}border-orange-300{% endif %} overflow-hidden">
+                <div class="px-5 py-4 {% if active_loan.status == 'overdue' %}bg-red-50 border-b border-red-200{% else %}bg-orange-50 border-b border-orange-200{% endif %}">
+                    <h3 class="font-semibold {% if active_loan.status == 'overdue' %}text-red-700{% else %}text-orange-700{% endif %} flex items-center gap-2">
+                        <i class="fas fa-exclamation-circle"></i>
+                        Outstanding Loan
+                        {% if active_loan.status == 'overdue' %}
+                        <span class="ml-auto text-xs bg-red-200 text-red-800 px-2 py-0.5 rounded-full">OVERDUE</span>
+                        {% endif %}
+                    </h3>
+                </div>
+                <div class="p-5 space-y-3 text-sm">
+                    <div class="flex justify-between">
+                        <span class="text-gray-500">Energy granted</span>
+                        <span class="font-medium">{{ active_loan.kwh_granted }} kWh</span>
+                    </div>
+                    <div class="flex justify-between">
+                        <span class="text-gray-500">Total to repay</span>
+                        <span class="font-medium">{{ "{:,.0f}".format(active_loan.rwf_to_repay) }} RWF</span>
+                    </div>
+                    <div class="flex justify-between">
+                        <span class="text-gray-500">Already paid</span>
+                        <span class="font-medium text-green-600">{{ "{:,.0f}".format(active_loan.rwf_paid) }} RWF</span>
+                    </div>
+                    <div class="flex justify-between border-t border-gray-100 pt-2">
+                        <span class="text-gray-700 font-semibold">Remaining</span>
+                        <span class="font-bold {% if active_loan.status == 'overdue' %}text-red-600{% else %}text-orange-600{% endif %}">
+                            {{ "{:,.0f}".format(active_loan.rwf_to_repay - active_loan.rwf_paid) }} RWF
+                        </span>
+                    </div>
+                    <div class="flex justify-between">
+                        <span class="text-gray-500">Due date</span>
+                        <span class="font-medium">{{ active_loan.due_date[:10] }}</span>
+                    </div>
+
+                    <!-- Pay loan form -->
+                    <form id="payLoanForm" class="mt-4 space-y-3">
+                        <input type="hidden" id="loanId" value="{{ active_loan.id }}">
+                        <label class="block text-sm font-medium text-gray-700">Payment Amount (RWF)</label>
+                        <input type="number" id="payAmount" min="1"
+                               placeholder="e.g. {{ "{:.0f}".format(active_loan.rwf_to_repay - active_loan.rwf_paid) }}"
+                               class="block w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-orange-400 focus:border-orange-400">
+                        <button type="submit"
+                                class="w-full py-2.5 px-4 rounded-lg text-sm font-medium text-white bg-orange-500 hover:bg-orange-600 transition-colors flex items-center justify-center gap-2">
+                            <i class="fas fa-money-bill-wave"></i>
+                            <span id="payBtnText">Pay Loan</span>
+                        </button>
+                    </form>
+                </div>
+            </div>
+            {% else %}
+            <!-- Request loan panel (only when balance is low) -->
+            <div class="bg-white rounded-xl shadow border border-gray-200 overflow-hidden">
+                <div class="px-5 py-4 bg-gray-50 border-b border-gray-200">
+                    <h3 class="font-semibold text-gray-700 flex items-center gap-2">
+                        <i class="fas fa-hand-holding-usd text-blue-500"></i>
+                        Energy Loan
+                    </h3>
+                </div>
+                <div class="p-5">
+                    {% if meter.balance < 0.5 %}
+                    <p class="text-sm text-gray-600 mb-4">
+                        Your balance is critically low. Request a <strong>5 kWh loan</strong> to keep your power on.
+                        Repay within <strong>2 days</strong>.
+                    </p>
+                    <button id="requestLoanBtn" onclick="requestLoan()"
+                            class="w-full py-2.5 px-4 rounded-lg text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 transition-colors flex items-center justify-center gap-2">
+                        <i class="fas fa-bolt"></i>
+                        Request Loan Energy (5 kWh)
+                    </button>
+                    {% else %}
+                    <p class="text-sm text-gray-500 text-center py-3">
+                        <i class="fas fa-check-circle text-green-400 mr-1"></i>
+                        Your balance is sufficient. Loans are available only when balance drops below 0.5 kWh.
+                    </p>
+                    {% endif %}
+                </div>
+            </div>
+            {% endif %}
+
+            <!-- Quick recharge link -->
+            <a href="{{ url_for('recharge_page') }}"
+               class="flex items-center justify-center gap-2 w-full py-3 px-4 bg-green-600 hover:bg-green-700 text-white rounded-xl font-medium text-sm transition-colors shadow">
+                <i class="fas fa-credit-card"></i>
+                Top Up Balance
+            </a>
+        </div>
+
+        <!-- Right column: recent transactions -->
+        <div class="lg:col-span-2">
+            <div class="bg-white rounded-xl shadow border border-gray-200 overflow-hidden">
+                <div class="px-5 py-4 border-b border-gray-200 flex items-center justify-between">
+                    <h3 class="font-semibold text-gray-800 flex items-center gap-2">
+                        <i class="fas fa-history text-blue-500"></i>
+                        Recent Transactions
+                    </h3>
+                    <span class="text-xs text-gray-400">Last 10</span>
+                </div>
+                <div id="transactionList" class="divide-y divide-gray-50">
+                    <div class="p-6 text-center text-gray-400">
+                        <i class="fas fa-spinner fa-spin mr-2"></i>Loading...
+                    </div>
+                </div>
+            </div>
+
+            <!-- Loan history -->
+            <div class="bg-white rounded-xl shadow border border-gray-200 overflow-hidden mt-5">
+                <div class="px-5 py-4 border-b border-gray-200">
+                    <h3 class="font-semibold text-gray-800 flex items-center gap-2">
+                        <i class="fas fa-hand-holding-usd text-orange-400"></i>
+                        Loan History
+                    </h3>
+                </div>
+                <div id="loanHistoryList" class="divide-y divide-gray-50">
+                    <div class="p-6 text-center text-gray-400">
+                        <i class="fas fa-spinner fa-spin mr-2"></i>Loading...
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+</div>
+
+<!-- Notification container -->
+<div id="notifContainer" class="fixed top-20 right-4 z-50 space-y-2 w-80"></div>
+{% endblock %}
+
+{% block extra_js %}
+<meta name="csrf-token" content="{{ csrf_token() }}">
+<script>
+    const csrfToken = document.querySelector('meta[name="csrf-token"]').getAttribute('content');
+
+    function showNotif(msg, type='info') {
+        const colors = {success:'bg-green-50 border-green-200 text-green-700',
+                        error:'bg-red-50 border-red-200 text-red-700',
+                        info:'bg-blue-50 border-blue-200 text-blue-700'};
+        const el = document.createElement('div');
+        el.className = `${colors[type]||colors.info} border rounded-lg shadow-md p-4 text-sm flex items-start gap-2 animate-slide-in`;
+        el.innerHTML = `<i class="fas fa-${type==='success'?'check-circle':type==='error'?'exclamation-circle':'info-circle'} mt-0.5"></i><span class="flex-1">${msg}</span>
+            <button onclick="this.parentElement.remove()" class="text-gray-400 hover:text-gray-600"><i class="fas fa-times"></i></button>`;
+        document.getElementById('notifContainer').prepend(el);
+        setTimeout(() => el.remove(), 6000);
+    }
+
+    async function apiFetch(url, opts={}) {
+        const res = await fetch(url, {
+            headers: {'Content-Type':'application/json', 'X-CSRFToken': csrfToken},
+            credentials: 'same-origin', ...opts
+        });
+        return res.json();
+    }
+
+    // ── Loan repayment ──────────────────────────────────────────────────────
+    const payForm = document.getElementById('payLoanForm');
+    if (payForm) {
+        payForm.addEventListener('submit', async function(e) {
+            e.preventDefault();
+            const loanId = document.getElementById('loanId').value;
+            const amount = parseFloat(document.getElementById('payAmount').value);
+            if (!amount || amount <= 0) { showNotif('Enter a valid amount.','error'); return; }
+            const btn = document.getElementById('payBtnText');
+            btn.textContent = 'Processing…';
+            const data = await apiFetch(`/api/loans/${loanId}/pay`, {
+                method:'POST', body: JSON.stringify({amount_rwf: amount})
+            });
+            btn.textContent = 'Pay Loan';
+            if (data.success) { showNotif(data.message,'success'); setTimeout(()=>location.reload(),1500); }
+            else showNotif(data.error,'error');
+        });
+    }
+
+    // ── Request loan ────────────────────────────────────────────────────────
+    async function requestLoan() {
+        const btn = document.getElementById('requestLoanBtn');
+        if (!btn) return;
+        btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i>Requesting…';
+        const data = await apiFetch('/api/loans/request', {method:'POST', body:'{}'});
+        if (data.success) { showNotif(data.message,'success'); setTimeout(()=>location.reload(),1800); }
+        else { showNotif(data.error,'error'); btn.disabled=false; btn.innerHTML='<i class="fas fa-bolt mr-2"></i>Request Loan Energy (5 kWh)'; }
+    }
+
+    // ── Transaction history ─────────────────────────────────────────────────
+    async function loadTransactions() {
+        const serial = "{{ meter.serial_number if meter else '' }}";
+        if (!serial) return;
+        const data = await apiFetch(`/api/recharges?serial_number=${serial}`);
+        const el = document.getElementById('transactionList');
+        if (!data.success || !data.data.length) {
+            el.innerHTML = '<div class="p-6 text-center text-sm text-gray-400">No transactions yet.</div>'; return;
+        }
+        el.innerHTML = data.data.slice(0,10).map(r => {
+            const pos = r.recharge_amount > 0;
+            return `<div class="flex items-center justify-between px-5 py-3 hover:bg-gray-50">
+                <div>
+                    <p class="text-sm font-medium ${pos?'text-green-600':'text-red-600'}">${pos?'+':''}${r.recharge_amount.toFixed(2)} kWh</p>
+                    <p class="text-xs text-gray-400">${r.timestamp}</p>
+                </div>
+                <span class="text-xs px-2 py-1 rounded-full ${pos?'bg-green-100 text-green-700':'bg-red-100 text-red-700'}">${pos?'Recharge':'Consumption'}</span>
+            </div>`;
+        }).join('');
+    }
+
+    // ── Loan history ────────────────────────────────────────────────────────
+    async function loadLoanHistory() {
+        const data = await apiFetch('/api/loans');
+        const el = document.getElementById('loanHistoryList');
+        if (!data.success || !data.data.length) {
+            el.innerHTML = '<div class="p-6 text-center text-sm text-gray-400">No loan history.</div>'; return;
+        }
+        const statusColor = {active:'bg-orange-100 text-orange-700', overdue:'bg-red-100 text-red-700',
+                             paid:'bg-green-100 text-green-700', cancelled:'bg-gray-100 text-gray-500'};
+        el.innerHTML = data.data.map(l => `
+            <div class="px-5 py-3 hover:bg-gray-50">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <p class="text-sm font-medium text-gray-800">${l.kwh_granted} kWh loan</p>
+                        <p class="text-xs text-gray-400">${l.granted_at.slice(0,10)} → due ${l.due_date.slice(0,10)}</p>
+                    </div>
+                    <div class="text-right">
+                        <span class="text-xs px-2 py-1 rounded-full font-medium ${statusColor[l.status]||'bg-gray-100 text-gray-500'}">${l.status.toUpperCase()}</span>
+                        <p class="text-xs text-gray-500 mt-1">${l.rwf_paid.toLocaleString()} / ${l.rwf_to_repay.toLocaleString()} RWF</p>
+                    </div>
+                </div>
+            </div>`).join('');
+    }
+
+    // ── Live balance refresh ────────────────────────────────────────────────
+    async function refreshBalance() {
+        const serial = "{{ meter.serial_number if meter else '' }}";
+        if (!serial) return;
+        const data = await apiFetch(`/api/meter_status?serial_number=${serial}`);
+        if (data.success) {
+            document.getElementById('liveBalance').textContent = data.data.balance.toFixed(2);
+        }
+    }
+
+    loadTransactions();
+    loadLoanHistory();
+    setInterval(refreshBalance, 30000);
+</script>
+{% endblock %}
