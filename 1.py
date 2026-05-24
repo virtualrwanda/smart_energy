@@ -25,12 +25,19 @@ app = Flask(__name__)
 class Config:
     SECRET_KEY = os.getenv('SECRET_KEY', secrets.token_hex(32))
     DATABASE_PATH = os.getenv('DATABASE_PATH', 'energy_meter.db')
-    SMS_API_URL = os.getenv('SMS_API_URL', 'https://vrt.rw/SMS/sms.php')
     CONVERSION_RATE = float(os.getenv('CONVERSION_RATE', '0.0047'))
     MODEL_FILENAME = os.getenv('MODEL_FILENAME', 'optimized_customer_payment_model.pkl')
+    LOAN_KWH  = float(os.getenv('LOAN_KWH', '5.0'))   # energy granted per loan request
+    LOAN_DAYS = int(os.getenv('LOAN_DAYS', '2'))        # repayment window in days
     WTF_CSRF_ENABLED = True
     WTF_CSRF_SECRET_KEY = os.getenv('CSRF_SECRET_KEY', secrets.token_hex(32))
     WTF_CSRF_TIME_LIMIT = 3600  # 1 hour
+
+    # ── FDI SMS credentials ──────────────────────────────────────────────────
+    SMS_USERNAME  = os.getenv("FDI_USERNAME", "5BBEC534-9DC0-4DC9-A2D0-D33F5537AEC4")
+    SMS_PASSWORD  = os.getenv("FDI_PASSWORD", "6335681A-074B-4FCF-81C1-FBFEB8C45579")
+    SMS_BASE_URL  = "https://messaging.fdibiz.com/api/v1/"
+    SMS_SENDER_ID = "FDI"
 
 # Apply configuration
 app.config['SECRET_KEY'] = Config.SECRET_KEY
@@ -205,6 +212,25 @@ def init_db():
             timestamp TEXT NOT NULL
         )
     ''')
+
+    # Create loans table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS loans (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            serial_number TEXT NOT NULL,
+            owner_name TEXT NOT NULL,
+            kwh_granted REAL NOT NULL,
+            rwf_to_repay REAL NOT NULL,
+            rwf_paid REAL NOT NULL DEFAULT 0.0,
+            status TEXT NOT NULL DEFAULT 'active',
+            granted_at TEXT NOT NULL,
+            due_date TEXT NOT NULL,
+            paid_at TEXT,
+            settled_by TEXT
+        )
+    ''')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_loans_serial ON loans(serial_number)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_loans_status ON loans(status)')
     
     # Create users table
     cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='users'")
@@ -274,6 +300,16 @@ def init_db():
     except Exception as e:
         logger.error(f"Error adding sample meter: {e}")
     
+    # Non-destructive migrations
+    for migration in [
+        'ALTER TABLE meter_data ADD COLUMN low_balance_notified INTEGER DEFAULT 0',
+        'ALTER TABLE meter_data ADD COLUMN last_sms_sent TEXT',
+    ]:
+        try:
+            cursor.execute(migration)
+        except sqlite3.OperationalError:
+            pass
+
     # Create indexes for performance
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_meter_serial ON meter_data(serial_number)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_recharges_serial ON recharges(serial_number)')
@@ -347,9 +383,8 @@ def inject_config():
     return {
         'config': {
             'CONVERSION_RATE': Config.CONVERSION_RATE,
-            'SMS_API_URL': Config.SMS_API_URL,
             'DATABASE_PATH': Config.DATABASE_PATH,
-            'MODEL_FILENAME': Config.MODEL_FILENAME
+            'MODEL_FILENAME': Config.MODEL_FILENAME,
         },
         'loaded_model': loaded_model is not None
     }
@@ -404,20 +439,66 @@ def success_response(data=None, message="Success", status_code=200):
         response['data'] = data
     return jsonify(response), status_code
 
-def send_sms(phone, message):
-    """Send an SMS alert when balance is low"""
+_fdi_token_cache = {"token": None, "expires_at": 0}  # reset to force re-auth
+
+def _get_fdi_token() -> str | None:
+    """Obtain (and cache) a Bearer token from the FDI auth endpoint."""
+    import time
+    cache = _fdi_token_cache
+    if cache["token"] and time.time() < cache["expires_at"]:
+        return cache["token"]
     try:
-        url = f"{Config.SMS_API_URL}?phone={phone}&message={message}"
-        response = requests.get(url, timeout=5)
-        
-        if response.status_code == 200:
-            logger.info(f"SMS sent successfully to {phone}")
-            return True
-        else:
-            logger.error(f"SMS failed with status {response.status_code}")
-            return False
+        r = requests.post(
+            f"{Config.SMS_BASE_URL}auth/",
+            json={"api_username": Config.SMS_USERNAME, "api_password": Config.SMS_PASSWORD},
+            timeout=10,
+        )
+        if r.status_code in (200, 201):
+            body = r.json()
+            token = body.get("token") or body.get("access_token") or body.get("data", {}).get("token")
+            if token:
+                cache["token"] = token
+                cache["expires_at"] = time.time() + 3500  # refresh ~1 hour
+                logger.info("FDI auth token obtained.")
+                return token
+        logger.error(f"FDI auth failed — HTTP {r.status_code}: {r.text[:200]}")
     except Exception as e:
-        logger.error(f"SMS Sending Error: {e}")
+        logger.error(f"FDI auth error: {e}")
+    return None
+
+def send_sms(phone, message):
+    """Send an SMS via the FDI messaging API."""
+    try:
+        token = _get_fdi_token()
+        if not token:
+            logger.error("FDI SMS aborted — could not obtain auth token.")
+            return False
+
+        url = f"{Config.SMS_BASE_URL}mt/single"
+        payload = {
+            "msisdn":    phone,
+            "message":   message,
+            "sender_id": Config.SMS_SENDER_ID,
+            "msgRef":    f"em-{datetime.datetime.now().strftime('%Y%m%d%H%M%S%f')}",
+        }
+        response = requests.post(
+            url, json=payload,
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=10,
+        )
+
+        if response.status_code in (200, 201):
+            body = response.json() if response.content else {}
+            logger.info(f"SMS sent to {phone}: {body}")
+            return True
+
+        logger.error(f"FDI SMS failed — HTTP {response.status_code}: {response.text[:200]}")
+        # Invalidate token on auth errors so next call re-authenticates
+        if response.status_code == 401:
+            _fdi_token_cache["token"] = None
+        return False
+    except Exception as e:
+        logger.error(f"FDI SMS error: {e}")
         return False
 
 def predict_with_fallback(prev_payment, two_months_payment):
@@ -528,8 +609,44 @@ def index():
 @app.route('/client/dashboard')
 @login_required
 def client_dashboard():
-    """Render client dashboard"""
-    return render_template('client_dashboard.html')
+    """Render client dashboard with meter and loan info"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT m.serial_number, m.balance, m.owner_contact
+        FROM users u
+        LEFT JOIN meter_data m ON u.username = m.owner_name
+        WHERE u.id = ?
+    ''', (session['user_id'],))
+    meter = cursor.fetchone()
+
+    active_loan = None
+    if meter and meter['serial_number']:
+        _mark_overdue_loans(cursor, meter['serial_number'])
+        cursor.execute('''
+            SELECT * FROM loans
+            WHERE serial_number = ? AND status IN ('active', 'overdue')
+            ORDER BY granted_at DESC LIMIT 1
+        ''', (meter['serial_number'],))
+        active_loan = cursor.fetchone()
+
+    conn.commit()
+    conn.close()
+    return render_template('client_dashboard.html',
+                           meter=dict(meter) if meter else None,
+                           active_loan=dict(active_loan) if active_loan else None)
+
+@app.route('/loans')
+@login_required
+@admin_required
+def loans_page():
+    """Render loan management page (admin only)"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    _mark_overdue_loans(cursor)
+    conn.commit()
+    conn.close()
+    return render_template('loans.html')
 
 @app.route('/pp')
 @login_required
@@ -573,6 +690,26 @@ def recharge_page():
 def users_page():
     """Render users management page (admin only)"""
     return render_template('users.html')
+
+# ==================== ACCESS CONTROL HELPER ====================
+def get_client_serial(cursor):
+    """Return the meter serial number owned by the currently logged-in client, or None."""
+    cursor.execute('''
+        SELECT m.serial_number FROM meter_data m
+        JOIN users u ON u.username = m.owner_name
+        WHERE u.id = ?
+    ''', (session.get('user_id'),))
+    row = cursor.fetchone()
+    return row['serial_number'] if row else None
+
+def assert_meter_access(cursor, serial_number):
+    """Raise 403 error_response if a non-admin is trying to access another client's meter."""
+    if session.get('role') == 'admin':
+        return None  # admins see everything
+    own = get_client_serial(cursor)
+    if not own or own != serial_number:
+        return error_response("Access denied. You can only view your own meter data.", 403)
+    return None
 
 # ==================== API ROUTES ====================
 # @app.route('/api/get_csrf_token', methods=['GET'])
@@ -629,10 +766,17 @@ def get_data():
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute('SELECT timestamp, consumption FROM meter_data ORDER BY timestamp DESC LIMIT 100')
+        if session.get('role') == 'admin':
+            cursor.execute('SELECT timestamp, consumption FROM meter_data ORDER BY timestamp DESC LIMIT 100')
+        else:
+            own = get_client_serial(cursor)
+            if not own:
+                conn.close()
+                return jsonify([])
+            cursor.execute('SELECT timestamp, consumption FROM meter_data WHERE serial_number = ? ORDER BY timestamp DESC LIMIT 100', (own,))
         data = cursor.fetchall()
         conn.close()
-        
+
         result = [(row['timestamp'], row['consumption']) for row in data]
         return jsonify(result)
     except Exception as e:
@@ -642,11 +786,18 @@ def get_data():
 @app.route('/api/registered_meters', methods=['GET'])
 @api_login_required
 def get_registered_meters():
-    """Get all registered meters"""
+    """Get registered meters (admin: all; client: own meter only)"""
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute('SELECT serial_number, owner_name, owner_contact, balance, timestamp FROM meter_data ORDER BY timestamp DESC')
+        if session.get('role') == 'admin':
+            cursor.execute('SELECT serial_number, owner_name, owner_contact, balance, timestamp FROM meter_data ORDER BY timestamp DESC')
+        else:
+            own = get_client_serial(cursor)
+            if not own:
+                conn.close()
+                return success_response([])
+            cursor.execute('SELECT serial_number, owner_name, owner_contact, balance, timestamp FROM meter_data WHERE serial_number = ?', (own,))
         meters = cursor.fetchall()
         conn.close()
 
@@ -759,29 +910,61 @@ def recharge():
         current_balance = row['balance']
         new_balance = current_balance + credit_amount
         
-        cursor.execute('UPDATE meter_data SET balance = ? WHERE serial_number = ?', 
-                     (new_balance, serial_number))
-        
+        cursor.execute(
+            'UPDATE meter_data SET balance = ? WHERE serial_number = ?',
+            (new_balance, serial_number)
+        )
+
         cursor.execute('''
             INSERT INTO recharges (serial_number, recharge_amount, timestamp)
             VALUES (?, ?, datetime("now"))
         ''', (serial_number, credit_amount))
-        
+
         cursor.execute('''
             INSERT INTO purchase (serial_number, recharge_amount, timestamp)
             VALUES (?, ?, datetime("now"))
         ''', (serial_number, credit_amount))
-        
+
+        # Auto-pay 50% of recharge RWF toward any outstanding loan
+        loan_payment_rwf = 0.0
+        loan_msg = ""
+        _mark_overdue_loans(cursor, serial_number)
+        cursor.execute('''
+            SELECT * FROM loans
+            WHERE serial_number = ? AND status IN ('active', 'overdue')
+            ORDER BY granted_at ASC LIMIT 1
+        ''', (serial_number,))
+        active_loan = cursor.fetchone()
+
+        if active_loan:
+            loan_payment_rwf = round(amount * 0.5, 2)
+            new_paid = round(active_loan['rwf_paid'] + loan_payment_rwf, 2)
+            remaining = round(active_loan['rwf_to_repay'] - new_paid, 2)
+
+            if remaining <= 0:
+                cursor.execute('''
+                    UPDATE loans SET rwf_paid = ?, status = 'paid',
+                        paid_at = datetime('now'), settled_by = 'auto-recharge'
+                    WHERE id = ?
+                ''', (active_loan['rwf_to_repay'], active_loan['id']))
+                loan_msg = f" {loan_payment_rwf:,.0f} RWF (50%) applied to your loan — fully repaid!"
+                logger.info(f"Loan {active_loan['id']} fully paid via auto-deduction on recharge.")
+            else:
+                cursor.execute('UPDATE loans SET rwf_paid = ? WHERE id = ?', (new_paid, active_loan['id']))
+                loan_msg = f" {loan_payment_rwf:,.0f} RWF (50%) auto-applied to your loan. Remaining: {remaining:,.0f} RWF."
+                logger.info(f"Loan {active_loan['id']} partial auto-payment {loan_payment_rwf} RWF, remaining {remaining} RWF.")
+
         conn.commit()
         conn.close()
-        
-        logger.info(f"Recharge successful for {serial_number}: {credit_amount}")
-        
+
+        logger.info(f"Recharge successful for {serial_number}: {credit_amount} kWh")
+
         return jsonify({
             'success': True,
-            'message': 'Recharge successful!',
+            'message': f'Recharge successful!{loan_msg}',
             'new_balance': new_balance,
-            'credit_amount': credit_amount
+            'credit_amount': credit_amount,
+            'loan_payment_rwf': loan_payment_rwf,
         }), 200
             
     except Exception as e:
@@ -793,7 +976,7 @@ def recharge():
 def get_recharge_history():
     """Get recharge history for a meter"""
     serial_number = request.args.get('serial_number', '').strip()
-    
+
     if not serial_number:
         return error_response("Serial number is required.", 400)
 
@@ -801,8 +984,13 @@ def get_recharge_history():
         conn = get_db_connection()
         cursor = conn.cursor()
 
+        denied = assert_meter_access(cursor, serial_number)
+        if denied:
+            conn.close()
+            return denied
+
         cursor.execute('''
-            SELECT recharge_amount, timestamp FROM recharges 
+            SELECT recharge_amount, timestamp FROM recharges
             WHERE serial_number = ?
             ORDER BY timestamp DESC
         ''', (serial_number,))
@@ -818,12 +1006,18 @@ def get_recharge_history():
 @app.route('/api/get_recharges', methods=['GET'])
 @api_login_required
 def get_recharges():
-    """Get all recharges for charts"""
+    """Get recharges for charts (admin: all; client: own meter only)"""
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        
-        cursor.execute('SELECT timestamp, recharge_amount FROM recharges ORDER BY timestamp DESC LIMIT 100')
+        if session.get('role') == 'admin':
+            cursor.execute('SELECT timestamp, recharge_amount FROM recharges ORDER BY timestamp DESC LIMIT 100')
+        else:
+            own = get_client_serial(cursor)
+            if not own:
+                conn.close()
+                return jsonify([])
+            cursor.execute('SELECT timestamp, recharge_amount FROM recharges WHERE serial_number = ? ORDER BY timestamp DESC LIMIT 100', (own,))
         recharges = cursor.fetchall()
         conn.close()
 
@@ -834,28 +1028,34 @@ def get_recharges():
         return jsonify([])
 
 @app.route('/api/meter_status', methods=['GET'])
-#@api_login_required
 def get_meter_status():
-    """Get current status of a meter"""
+    """Get current status of a meter (IoT-accessible; clients restricted to own meter)"""
     serial_number = request.args.get('serial_number', '').strip()
-    
+
     if not serial_number:
         return error_response("Serial number is required.", 400)
-    
+
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        
+
+        # Only enforce isolation when a client session is active
+        if 'user_id' in session and session.get('role') != 'admin':
+            denied = assert_meter_access(cursor, serial_number)
+            if denied:
+                conn.close()
+                return denied
+
         cursor.execute('SELECT balance, consumption FROM meter_data WHERE serial_number = ?', (serial_number,))
         data = cursor.fetchone()
         conn.close()
-        
+
         if data:
             balance, consumption = data['balance'], data['consumption']
-            status = "Low Balance" if balance <= 1 else "Normal"
+            status = "Low Balance" if balance < 1.0 else "Normal"
             return success_response({
-                "balance": balance, 
-                "consumption": consumption, 
+                "balance": balance,
+                "consumption": consumption,
                 "status": status
             })
         else:
@@ -950,7 +1150,7 @@ def consume():
         conn = get_db_connection()
         cursor = conn.cursor()
 
-        cursor.execute('SELECT balance, owner_contact FROM meter_data WHERE serial_number = ?', (serial_number,))
+        cursor.execute('SELECT balance, owner_contact, owner_name, last_sms_sent FROM meter_data WHERE serial_number = ?', (serial_number,))
         row = cursor.fetchone()
 
         if not row:
@@ -958,7 +1158,9 @@ def consume():
             return error_response("Meter not found.", 404)
 
         current_balance = row['balance']
-        owner_contact = row['owner_contact']
+        owner_contact   = row['owner_contact']
+        owner_name      = row['owner_name']
+        last_sms_sent   = row['last_sms_sent']
 
         if current_balance <= 0:
             conn.close()
@@ -966,7 +1168,7 @@ def consume():
 
         new_balance = max(0, current_balance - consumption_amount)
 
-        cursor.execute('UPDATE meter_data SET balance = ?, consumption = consumption + ? WHERE serial_number = ?', 
+        cursor.execute('UPDATE meter_data SET balance = ?, consumption = consumption + ? WHERE serial_number = ?',
                       (new_balance, consumption_amount, serial_number))
 
         # Log consumption as negative recharge
@@ -975,14 +1177,47 @@ def consume():
             VALUES (?, ?, datetime("now"))
         ''', (serial_number, -consumption_amount))
 
+        # Send SMS when balance < 1 kWh — at most once per 10 minutes per meter
+        sms_status = None
+        if new_balance < 1.0 and owner_contact:
+            now = datetime.datetime.now()
+            minutes_since_last = 999
+            if last_sms_sent:
+                try:
+                    minutes_since_last = (now - datetime.datetime.fromisoformat(last_sms_sent)).total_seconds() / 60
+                except ValueError:
+                    pass
+
+            if minutes_since_last >= 10:
+                # Build prediction line
+                prediction_line = ""
+                recharge_data = get_recharge_data(serial_number)
+                if len(recharge_data) >= 2:
+                    try:
+                        predicted = predict_with_fallback(recharge_data[0], recharge_data[1])
+                        prediction_line = f" Your predicted next recharge is {predicted:,.0f} RWF."
+                    except Exception:
+                        pass
+
+                sms_message = (
+                    f"Dear {owner_name}, your energy meter ({serial_number}) balance is critically low: "
+                    f"{new_balance:.2f} kWh. Please recharge now!"
+                    f"{prediction_line} "
+                    f"By buying energy, you get loan energy to be paid within two days."
+                )
+                logger.info(f"Sending low-balance SMS to {owner_contact} for meter {serial_number}")
+                sms_status = send_sms(owner_contact, sms_message)
+                logger.info(f"SMS send result: {sms_status}")
+                if sms_status:
+                    cursor.execute(
+                        'UPDATE meter_data SET last_sms_sent = ? WHERE serial_number = ?',
+                        (now.isoformat(), serial_number)
+                    )
+            else:
+                logger.info(f"SMS rate-limited for {serial_number}: {minutes_since_last:.1f} min since last send")
+
         conn.commit()
         conn.close()
-
-        # Send SMS alert if balance is low
-        sms_status = None
-        if new_balance <= 1 and owner_contact:
-            sms_message = f"Alert! Your energy meter balance is low: {new_balance:.2f} kWh. Please recharge soon."
-            sms_status = send_sms(owner_contact, sms_message)
 
         response_data = {"new_balance": new_balance}
         if sms_status is not None:
@@ -1075,12 +1310,19 @@ def predictx():
     try:
         if not request.is_json:
             return error_response("Content-Type must be application/json", 400)
-            
+
         data = request.get_json()
         serial_number = data.get('serial_number', '').strip()
 
         if not serial_number:
             return error_response("Serial number is required.", 400)
+
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        denied = assert_meter_access(cursor, serial_number)
+        conn.close()
+        if denied:
+            return denied
 
         recharge_data = get_recharge_data(serial_number)
         
@@ -1099,6 +1341,218 @@ def predictx():
     except Exception as e:
         logger.error(f"Prediction error: {e}")
         logger.error(traceback.format_exc())
+        return error_response(str(e), 500)
+
+# ==================== LOAN HELPERS & API ====================
+def _mark_overdue_loans(cursor, serial_number=None):
+    """Flip active loans past their due_date to 'overdue'."""
+    now = datetime.datetime.now().isoformat()
+    if serial_number:
+        cursor.execute(
+            "UPDATE loans SET status='overdue' WHERE status='active' AND due_date < ? AND serial_number = ?",
+            (now, serial_number)
+        )
+    else:
+        cursor.execute(
+            "UPDATE loans SET status='overdue' WHERE status='active' AND due_date < ?",
+            (now,)
+        )
+
+@app.route('/api/loans', methods=['GET'])
+@api_login_required
+def get_loans():
+    """Return loans. Admin sees all; client sees only their meter's loans."""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        _mark_overdue_loans(cursor)
+
+        if session.get('role') == 'admin':
+            cursor.execute('''
+                SELECT l.*, m.owner_contact
+                FROM loans l
+                LEFT JOIN meter_data m ON l.serial_number = m.serial_number
+                ORDER BY l.granted_at DESC
+            ''')
+        else:
+            cursor.execute('''
+                SELECT serial_number FROM meter_data
+                WHERE owner_name = (SELECT username FROM users WHERE id = ?)
+            ''', (session['user_id'],))
+            row = cursor.fetchone()
+            if not row:
+                conn.close()
+                return success_response([])
+            cursor.execute(
+                'SELECT * FROM loans WHERE serial_number = ? ORDER BY granted_at DESC',
+                (row['serial_number'],)
+            )
+
+        loans = [dict(r) for r in cursor.fetchall()]
+        conn.commit()
+        conn.close()
+        return success_response(loans)
+    except Exception as e:
+        logger.error(f"get_loans error: {e}")
+        return error_response(str(e), 500)
+
+@app.route('/api/loans/request', methods=['POST'])
+@api_login_required
+def request_loan():
+    """Grant a loan of LOAN_KWH to the requesting client's meter."""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        # Resolve serial number
+        if session.get('role') == 'admin':
+            data = request.get_json() or {}
+            serial_number = data.get('serial_number', '').strip()
+        else:
+            cursor.execute('''
+                SELECT m.serial_number FROM meter_data m
+                JOIN users u ON u.username = m.owner_name
+                WHERE u.id = ?
+            ''', (session['user_id'],))
+            row = cursor.fetchone()
+            serial_number = row['serial_number'] if row else ''
+
+        if not serial_number:
+            conn.close()
+            return error_response("No meter found for your account.", 400)
+
+        # Block if there's already an active/overdue loan
+        _mark_overdue_loans(cursor, serial_number)
+        cursor.execute(
+            "SELECT id FROM loans WHERE serial_number = ? AND status IN ('active','overdue')",
+            (serial_number,)
+        )
+        if cursor.fetchone():
+            conn.close()
+            return error_response("You already have an outstanding loan. Please pay it off first.", 400)
+
+        cursor.execute('SELECT balance, owner_name FROM meter_data WHERE serial_number = ?', (serial_number,))
+        meter = cursor.fetchone()
+        if not meter:
+            conn.close()
+            return error_response("Meter not found.", 404)
+
+        kwh  = Config.LOAN_KWH
+        rwf  = round(kwh / Config.CONVERSION_RATE, 2)
+        now  = datetime.datetime.now()
+        due  = (now + datetime.timedelta(days=Config.LOAN_DAYS)).isoformat()
+
+        # Add energy to meter
+        cursor.execute(
+            'UPDATE meter_data SET balance = balance + ? WHERE serial_number = ?',
+            (kwh, serial_number)
+        )
+        cursor.execute('''
+            INSERT INTO loans (serial_number, owner_name, kwh_granted, rwf_to_repay, status, granted_at, due_date)
+            VALUES (?, ?, ?, ?, 'active', ?, ?)
+        ''', (serial_number, meter['owner_name'], kwh, rwf, now.isoformat(), due))
+
+        conn.commit()
+        loan_id = cursor.lastrowid
+        conn.close()
+
+        logger.info(f"Loan granted: {serial_number} — {kwh} kWh, repay {rwf} RWF by {due}")
+        return success_response({
+            'loan_id': loan_id,
+            'kwh_granted': kwh,
+            'rwf_to_repay': rwf,
+            'due_date': due,
+        }, f"Loan of {kwh} kWh granted. Please repay {rwf:,.0f} RWF within {Config.LOAN_DAYS} days.")
+
+    except Exception as e:
+        logger.error(f"request_loan error: {e}")
+        return error_response(str(e), 500)
+
+@app.route('/api/loans/<int:loan_id>/pay', methods=['POST'])
+@api_login_required
+def pay_loan(loan_id):
+    """Client submits a repayment toward a loan."""
+    try:
+        data = request.get_json() or {}
+        amount = float(data.get('amount_rwf', 0))
+        if amount <= 0:
+            return error_response("Payment amount must be greater than zero.", 400)
+
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        cursor.execute('SELECT * FROM loans WHERE id = ?', (loan_id,))
+        loan = cursor.fetchone()
+        if not loan:
+            conn.close()
+            return error_response("Loan not found.", 404)
+
+        if loan['status'] == 'paid':
+            conn.close()
+            return error_response("This loan is already fully paid.", 400)
+
+        if loan['status'] == 'cancelled':
+            conn.close()
+            return error_response("This loan was cancelled.", 400)
+
+        # Enforce client ownership
+        if session.get('role') != 'admin':
+            cursor.execute('''
+                SELECT serial_number FROM meter_data
+                WHERE owner_name = (SELECT username FROM users WHERE id = ?)
+            ''', (session['user_id'],))
+            row = cursor.fetchone()
+            if not row or row['serial_number'] != loan['serial_number']:
+                conn.close()
+                return error_response("Access denied.", 403)
+
+        new_paid = round(loan['rwf_paid'] + amount, 2)
+        remaining = round(loan['rwf_to_repay'] - new_paid, 2)
+
+        if remaining <= 0:
+            cursor.execute('''
+                UPDATE loans SET rwf_paid = ?, status = 'paid', paid_at = datetime('now'), settled_by = 'client'
+                WHERE id = ?
+            ''', (loan['rwf_to_repay'], loan_id))
+            msg = "Loan fully repaid. Thank you!"
+        else:
+            cursor.execute('UPDATE loans SET rwf_paid = ? WHERE id = ?', (new_paid, loan_id))
+            msg = f"Payment recorded. Remaining balance: {remaining:,.2f} RWF."
+
+        conn.commit()
+        conn.close()
+        return success_response({'remaining_rwf': max(remaining, 0)}, msg)
+
+    except Exception as e:
+        logger.error(f"pay_loan error: {e}")
+        return error_response(str(e), 500)
+
+@app.route('/api/loans/<int:loan_id>/settle', methods=['POST'])
+@api_login_required
+@admin_required
+def settle_loan(loan_id):
+    """Admin writes off or cancels a loan."""
+    try:
+        data = request.get_json() or {}
+        action = data.get('action', 'cancel')  # 'cancel' or 'paid'
+        new_status = 'paid' if action == 'paid' else 'cancelled'
+
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute('SELECT id FROM loans WHERE id = ?', (loan_id,))
+        if not cursor.fetchone():
+            conn.close()
+            return error_response("Loan not found.", 404)
+
+        cursor.execute('''
+            UPDATE loans SET status = ?, paid_at = datetime('now'), settled_by = ?
+            WHERE id = ?
+        ''', (new_status, session.get('username', 'admin'), loan_id))
+        conn.commit()
+        conn.close()
+        return success_response(message=f"Loan marked as {new_status}.")
+    except Exception as e:
+        logger.error(f"settle_loan error: {e}")
         return error_response(str(e), 500)
 
 # ==================== USER MANAGEMENT API ====================
@@ -1404,6 +1858,23 @@ def ussd_callback():
     else:
         response = "END Invalid selection. Please try again."
         return response
+
+# ==================== TEST / DEBUG ENDPOINTS ====================
+@app.route('/api/test_sms', methods=['POST'])
+@api_login_required
+@admin_required
+def test_sms():
+    """Send a test SMS to verify FDI credentials. Admin only."""
+    data = request.get_json() or {}
+    phone = data.get('phone', '').strip()
+    if not phone:
+        return error_response("Provide a 'phone' number in the request body.", 400)
+
+    msg = f"[Test] FDI SMS working. Sent at {datetime.datetime.now().strftime('%H:%M:%S')}."
+    ok = send_sms(phone, msg)
+    if ok:
+        return success_response(message=f"Test SMS sent to {phone}.")
+    return error_response("SMS failed — check server logs for FDI API details.", 500)
 
 # ==================== ERROR HANDLERS ====================
 @app.errorhandler(404)
